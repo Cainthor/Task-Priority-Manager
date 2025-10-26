@@ -1,7 +1,7 @@
 import { useAuth } from '@/context/AuthContext';
 import { useNavigate, Link, Outlet, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Users, ClipboardList, Home } from 'lucide-react';
+import { Users, ClipboardList, Home, Calendar as CalendarIcon, Ticket, Settings as SettingsIcon, BarChart3 } from 'lucide-react';
 import ThemeToggle from '@/components/ThemeToggle';
 
 export default function Dashboard() {
@@ -17,7 +17,10 @@ export default function Dashboard() {
   const navigation = [
     { name: 'Inicio', href: '/dashboard', icon: Home },
     { name: 'Usuarios', href: '/dashboard/users', icon: Users },
-    { name: 'Tareas', href: '/dashboard/tasks', icon: ClipboardList },
+    { name: 'Tickets', href: '/dashboard/tickets', icon: Ticket },
+    { name: 'Calendario', href: '/dashboard/calendar', icon: CalendarIcon },
+    { name: 'Reportes', href: '/dashboard/reports', icon: BarChart3 },
+    { name: 'Configuraciones', href: '/dashboard/settings', icon: SettingsIcon },
   ];
 
   return (

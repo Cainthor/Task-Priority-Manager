@@ -1,0 +1,55 @@
+/* Custom styles for react-big-calendar */
+.rbc-calendar {
+    font-family: inherit;
+}
+
+.rbc-header {
+    padding: 10px 3px;
+    font-weight: 600;
+    font-size: 14px;
+    border-bottom: 2px solid #e2e8f0;
+}
+
+.rbc-today {
+    background-color: #eff6ff;
+}
+
+.rbc-off-range-bg {
+    background: #f8fafc;
+}
+
+.rbc-event {
+    padding: 2px 5px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.rbc-event:hover {
+    opacity: 1 !important;
+}
+
+.rbc-time-slot {
+    min-height: 40px;
+}
+
+.rbc-time-content {
+    border-top: 2px solid #e2e8f0;
+}
+
+.rbc-timeslot-group {
+    min-height: 60px;
+    border-left: 1px solid #e2e8f0;
+}
+
+.rbc-day-slot .rbc-time-slot {
+    border-top: 1px solid #f1f5f9;
+}
+
+.rbc-current-time-indicator {
+    background-color: #ef4444;
+    height: 2px;
+}
+
+.rbc-toolbar {
+    display: none;
+}
