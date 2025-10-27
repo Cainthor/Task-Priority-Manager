@@ -2,8 +2,8 @@
 // Inspired by react-hot-toast library
 import * as React from "react"
 
-const TOAST_LIMIT = 1
-const TOAST_REMOVE_DELAY = 1000000
+const TOAST_LIMIT = 5 // Allow up to 5 toasts to stack
+const TOAST_REMOVE_DELAY = 5000 // Remove after 5 seconds
 
 const actionTypes = {
   ADD_TOAST: "ADD_TOAST",

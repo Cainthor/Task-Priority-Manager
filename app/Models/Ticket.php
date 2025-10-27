@@ -16,6 +16,8 @@ class Ticket extends Model
         'hours_per_day',
         'status',
         'created_by',
+        'technical_user_id',
+        'functional_user_id',
         'start_date',
         'calculated_end_date',
         'buffer_days',
@@ -44,5 +46,21 @@ class Ticket extends Model
     public function assignments(): HasMany
     {
         return $this->hasMany(TicketAssignment::class);
+    }
+
+    /**
+     * Get the technical user assigned to this ticket
+     */
+    public function technicalUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'technical_user_id');
+    }
+
+    /**
+     * Get the functional user assigned to this ticket
+     */
+    public function functionalUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'functional_user_id');
     }
 }

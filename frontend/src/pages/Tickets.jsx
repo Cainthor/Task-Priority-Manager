@@ -21,6 +21,7 @@ export default function Tickets() {
     const [editingTicket, setEditingTicket] = useState(null);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [ticketToDelete, setTicketToDelete] = useState(null);
+    const [availabilityDialog, setAvailabilityDialog] = useState({ open: false, message: '', severity: 'info', pendingData: null });
     const { toast } = useToast();
     const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm();
 
@@ -33,10 +34,11 @@ export default function Tickets() {
     };
 
     const statusColors = {
-        pending: 'bg-gray-100 text-gray-800',
-        in_progress: 'bg-blue-100 text-blue-800',
-        completed: 'bg-green-100 text-green-800',
-        cancelled: 'bg-red-100 text-red-800',
+        pending: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-400',
+        in_progress: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400',
+        completed: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400',
+        cancelled: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400',
+        stopped: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400',
     };
 
     useEffect(() => {
@@ -68,20 +70,75 @@ export default function Tickets() {
         }
     };
 
+    const checkAvailability = async (data) => {
+        try {
+            const response = await axios.post('/api/check-availability', {
+                user_id: parseInt(data.user_id),
+                start_date: data.start_date,
+                total_hours: parseFloat(data.total_hours),
+            });
+
+            if (response.data.has_full_days || response.data.has_warnings) {
+                // Show confirmation dialog instead of just toast
+                return new Promise((resolve) => {
+                    setAvailabilityDialog({
+                        open: true,
+                        message: response.data.message,
+                        severity: response.data.severity,
+                        pendingData: data,
+                        onConfirm: () => {
+                            setAvailabilityDialog({ open: false, message: '', severity: 'info', pendingData: null });
+                            resolve(true);
+                        },
+                        onCancel: () => {
+                            setAvailabilityDialog({ open: false, message: '', severity: 'info', pendingData: null });
+                            resolve(false);
+                        }
+                    });
+                });
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error checking availability:', error);
+            return true; // Continue anyway
+        }
+    };
+
     const onSubmit = async (data) => {
         try {
-            console.log('Form data:', data); // Debug
-
             if (editingTicket) {
-                await axios.put(`/api/tickets/${editingTicket.id}`, {
+                const updateData = {
                     title: data.title,
                     description: data.description,
                     priority: parseInt(data.priority),
                     status: data.status,
-                });
+                };
+
+                // Add total_hours if provided (will trigger recalculation if changed)
+                if (data.total_hours) {
+                    updateData.total_hours = parseFloat(data.total_hours);
+                }
+
+                // Add new_user_id if user wants to reassign
+                if (data.new_user_id) {
+                    updateData.new_user_id = parseInt(data.new_user_id);
+                }
+
+                await axios.put(`/api/tickets/${editingTicket.id}`, updateData);
+
+                let description = 'Ticket actualizado correctamente';
+                if (data.new_user_id) {
+                    description = 'Ticket actualizado y reasignado. El calendario ha sido recalculado.';
+                } else if (data.total_hours && parseFloat(data.total_hours) !== editingTicket.total_hours) {
+                    description = 'Ticket actualizado. Las horas han cambiado y el calendario ha sido optimizado.';
+                } else if (parseInt(data.priority) !== editingTicket.priority) {
+                    description = 'Ticket actualizado. La prioridad ha cambiado y el calendario ha sido recalculado.';
+                }
+
                 toast({
                     title: 'Éxito',
-                    description: 'Ticket actualizado correctamente',
+                    description: description,
                 });
             } else {
                 if (!data.priority || !data.user_id || !data.start_date) {
@@ -90,6 +147,14 @@ export default function Tickets() {
                         description: 'Por favor completa todos los campos requeridos',
                         variant: 'destructive',
                     });
+                    return;
+                }
+
+                // Check availability before creating ticket
+                const shouldContinue = await checkAvailability(data);
+
+                if (!shouldContinue) {
+                    // User cancelled after seeing availability warning
                     return;
                 }
 
@@ -112,7 +177,6 @@ export default function Tickets() {
             reset();
             setEditingTicket(null);
         } catch (error) {
-            console.error('Error:', error.response?.data); // Debug
             toast({
                 title: 'Error',
                 description: error.response?.data?.message || 'Error al guardar ticket',
@@ -127,6 +191,7 @@ export default function Tickets() {
         setValue('description', ticket.description);
         setValue('priority', ticket.priority.toString());
         setValue('status', ticket.status);
+        setValue('total_hours', ticket.total_hours);
         setDialogOpen(true);
     };
 
@@ -197,8 +262,24 @@ export default function Tickets() {
             in_progress: 'En Progreso',
             completed: 'Completado',
             cancelled: 'Cancelado',
+            stopped: 'Detenido',
         };
         return labels[status] || status;
+    };
+
+    const formatDate = (dateString) => {
+        if (!dateString) return '-';
+        try {
+            // Parse as local date to avoid timezone issues
+            const [year, month, day] = dateString.split('-');
+            if (!year || !month || !day) return '-';
+            const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+            if (isNaN(date.getTime())) return '-';
+            return date.toLocaleDateString('es-ES');
+        } catch (error) {
+            console.error('Error formatting date:', dateString, error);
+            return '-';
+        }
     };
 
     if (loading) {
@@ -277,25 +358,71 @@ export default function Tickets() {
                             </div>
 
                             {editingTicket && (
-                                <div className="space-y-2">
-                                    <Label htmlFor="status">Estado</Label>
-                                    <input type="hidden" {...register('status', { required: true })} />
-                                    <Select
-                                        onValueChange={(value) => setValue('status', value)}
-                                        defaultValue={editingTicket?.status || 'pending'}
-                                        value={watch('status') || editingTicket?.status}
-                                    >
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Selecciona estado" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="pending">Pendiente</SelectItem>
-                                            <SelectItem value="in_progress">En Progreso</SelectItem>
-                                            <SelectItem value="completed">Completado</SelectItem>
-                                            <SelectItem value="cancelled">Cancelado</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </div>
+                                <>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="status">Estado</Label>
+                                        <input type="hidden" {...register('status', { required: true })} />
+                                        <Select
+                                            onValueChange={(value) => setValue('status', value)}
+                                            defaultValue={editingTicket?.status || 'pending'}
+                                            value={watch('status') || editingTicket?.status}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Selecciona estado" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="pending">Pendiente</SelectItem>
+                                                <SelectItem value="in_progress">En Progreso</SelectItem>
+                                                <SelectItem value="completed">Completado</SelectItem>
+                                                <SelectItem value="cancelled">Cancelado</SelectItem>
+                                                <SelectItem value="stopped">Detenido</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="total_hours">Horas Totales</Label>
+                                        <Input
+                                            id="total_hours"
+                                            type="number"
+                                            step="0.5"
+                                            {...register('total_hours', {
+                                                min: { value: 0.5, message: 'Mínimo 0.5 horas' }
+                                            })}
+                                            placeholder="Ej: 8"
+                                            defaultValue={editingTicket?.total_hours}
+                                        />
+                                        {errors.total_hours && (
+                                            <p className="text-sm text-red-500">{errors.total_hours.message}</p>
+                                        )}
+                                        <p className="text-xs text-muted-foreground">
+                                            Si cambias las horas o la prioridad, se recalcularán las asignaciones
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="new_user_id">Reasignar a (opcional)</Label>
+                                        <input type="hidden" {...register('new_user_id')} />
+                                        <Select
+                                            onValueChange={(value) => setValue('new_user_id', value)}
+                                            value={watch('new_user_id')}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Selecciona para reasignar" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {users.map((user) => (
+                                                    <SelectItem key={user.id} value={user.id.toString()}>
+                                                        {user.name} ({user.email})
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        <p className="text-xs text-muted-foreground">
+                                            Si seleccionas un nuevo usuario, se recalcularán todas las asignaciones
+                                        </p>
+                                    </div>
+                                </>
                             )}
 
                             {!editingTicket && (
@@ -306,7 +433,7 @@ export default function Tickets() {
                                             id="start_date"
                                             type="date"
                                             {...register('start_date', {
-                                                required: 'La fecha de inicio es requerida'
+                                                required: !editingTicket ? 'La fecha de inicio es requerida' : false
                                             })}
                                             min={new Date().toISOString().split('T')[0]}
                                         />
@@ -319,13 +446,13 @@ export default function Tickets() {
                                     </div>
 
                                     <div className="space-y-2">
-                                        <Label htmlFor="total_hours">Horas Totales</Label>
+                                        <Label htmlFor="total_hours_create">Horas Totales</Label>
                                         <Input
-                                            id="total_hours"
+                                            id="total_hours_create"
                                             type="number"
                                             step="0.5"
                                             {...register('total_hours', {
-                                                required: 'Las horas son requeridas',
+                                                required: !editingTicket ? 'Las horas son requeridas' : false,
                                                 min: { value: 0.5, message: 'Mínimo 0.5 horas' }
                                             })}
                                             placeholder="Ej: 8"
@@ -334,7 +461,7 @@ export default function Tickets() {
                                             <p className="text-sm text-red-500">{errors.total_hours.message}</p>
                                         )}
                                         <p className="text-xs text-muted-foreground">
-                                            Se asignarán 4 horas por día automáticamente
+                                            Prioridad Muy Alta: hasta 8h/día. Otras prioridades: 4h/día máximo
                                         </p>
                                     </div>
 
@@ -355,7 +482,7 @@ export default function Tickets() {
 
                                     <div className="space-y-2">
                                         <Label htmlFor="user_id">Asignar a Usuario</Label>
-                                        <input type="hidden" {...register('user_id', { required: true })} />
+                                        <input type="hidden" {...register('user_id', { required: !editingTicket })} />
                                         <Select
                                             onValueChange={(value) => setValue('user_id', value)}
                                             value={watch('user_id')}
@@ -396,16 +523,17 @@ export default function Tickets() {
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
-                    <Table>
+                    <div className="overflow-x-auto">
+                        <Table className="min-w-[800px]">
                         <TableHeader>
                             <TableRow>
                                 <TableHead>Título</TableHead>
                                 <TableHead>Prioridad</TableHead>
                                 <TableHead>Estado</TableHead>
+                                <TableHead>Asignado a</TableHead>
                                 <TableHead>Horas Totales</TableHead>
                                 <TableHead>Fecha Inicio</TableHead>
                                 <TableHead>Fecha Término</TableHead>
-                                <TableHead>Creado por</TableHead>
                                 <TableHead className="text-right">Acciones</TableHead>
                             </TableRow>
                         </TableHeader>
@@ -417,7 +545,12 @@ export default function Tickets() {
                                     </TableCell>
                                 </TableRow>
                             ) : (
-                                tickets.map((ticket) => (
+                                tickets.map((ticket) => {
+                                    const assignedUser = ticket.assignments && ticket.assignments.length > 0
+                                        ? ticket.assignments[0].user
+                                        : null;
+
+                                    return (
                                     <TableRow key={ticket.id}>
                                         <TableCell className="font-medium">{ticket.title}</TableCell>
                                         <TableCell>
@@ -430,14 +563,14 @@ export default function Tickets() {
                                                 {getStatusLabel(ticket.status)}
                                             </span>
                                         </TableCell>
+                                        <TableCell>{assignedUser?.name || '-'}</TableCell>
                                         <TableCell>{ticket.total_hours}h</TableCell>
                                         <TableCell>
-                                            {ticket.start_date ? new Date(ticket.start_date).toLocaleDateString('es-ES') : '-'}
+                                            {formatDate(ticket.start_date)}
                                         </TableCell>
                                         <TableCell>
-                                            {ticket.calculated_end_date ? new Date(ticket.calculated_end_date).toLocaleDateString('es-ES') : '-'}
+                                            {formatDate(ticket.calculated_end_date)}
                                         </TableCell>
-                                        <TableCell>{ticket.creator?.name}</TableCell>
                                         <TableCell className="text-right">
                                             <div className="flex justify-end gap-2">
                                                 <Button
@@ -457,10 +590,12 @@ export default function Tickets() {
                                             </div>
                                         </TableCell>
                                     </TableRow>
-                                ))
+                                    );
+                                })
                             )}
                         </TableBody>
                     </Table>
+                    </div>
                 </CardContent>
             </Card>
 
@@ -476,6 +611,32 @@ export default function Tickets() {
                         <AlertDialogCancel>Cancelar</AlertDialogCancel>
                         <AlertDialogAction onClick={confirmDelete}>
                             Eliminar
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Availability Warning Dialog */}
+            <AlertDialog open={availabilityDialog.open} onOpenChange={(open) => {
+                if (!open && availabilityDialog.onCancel) {
+                    availabilityDialog.onCancel();
+                }
+            }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>
+                            {availabilityDialog.severity === 'error' ? '⚠️ Advertencia de Disponibilidad' : 'ℹ️ Información'}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription className="whitespace-pre-line">
+                            {availabilityDialog.message}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel onClick={availabilityDialog.onCancel}>
+                            Cancelar
+                        </AlertDialogCancel>
+                        <AlertDialogAction onClick={availabilityDialog.onConfirm}>
+                            Continuar de todos modos
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>

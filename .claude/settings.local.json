@@ -5,7 +5,17 @@
       "Bash(php artisan:*)",
       "Bash(npm install:*)",
       "Bash(npm run dev:*)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(cat:*)",
+      "Bash(xargs:*)",
+      "Bash(dir:*)",
+      "Bash(timeout 5 bash -c 'cd \"\"C:\\MAMP\\htdocs\\Task-Priority-Manager\\frontend\"\" && npm run dev 2>&1')",
+      "Bash(npx eslint:*)",
+      "Bash(npm run build:*)",
+      "Bash(curl:*)",
+      "Bash(php -r:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

@@ -21,6 +21,8 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'role_type',
+        'specialty_id',
     ];
 
     /**
@@ -60,5 +62,29 @@ class User extends Authenticatable
     public function ticketAssignments(): HasMany
     {
         return $this->hasMany(TicketAssignment::class);
+    }
+
+    /**
+     * Get the specialty for this user
+     */
+    public function specialty()
+    {
+        return $this->belongsTo(Specialty::class);
+    }
+
+    /**
+     * Get tickets where this user is the technical user
+     */
+    public function technicalTickets(): HasMany
+    {
+        return $this->hasMany(Ticket::class, 'technical_user_id');
+    }
+
+    /**
+     * Get tickets where this user is the functional user
+     */
+    public function functionalTickets(): HasMany
+    {
+        return $this->hasMany(Ticket::class, 'functional_user_id');
     }
 }

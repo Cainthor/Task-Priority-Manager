@@ -6,6 +6,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\TicketController;
 use App\Http\Controllers\SettingsController;
+use App\Http\Controllers\SpecialtyController;
 
 Route::post('/login', [AuthController::class, 'login']);
 
@@ -14,9 +15,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::apiResource('users', UserController::class);
 
+    // Specialty routes
+    Route::get('/specialties', [SpecialtyController::class, 'index']);
+
     // Ticket routes
     Route::apiResource('tickets', TicketController::class);
     Route::get('/assignments', [TicketController::class, 'getAssignments']);
+    Route::post('/check-availability', [TicketController::class, 'checkAvailability']);
 
     // Settings routes
     Route::get('/settings', [SettingsController::class, 'index']);

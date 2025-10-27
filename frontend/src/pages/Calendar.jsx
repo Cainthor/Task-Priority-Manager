@@ -71,7 +71,8 @@ export default function Calendar() {
         if (!selectedUser) return;
 
         try {
-            const startDate = format(startOfMonth(currentDate), 'yyyy-MM-dd');
+            // Fetch previous month, current month, and next month
+            const startDate = format(startOfMonth(subMonths(currentDate, 1)), 'yyyy-MM-dd');
             const endDate = format(endOfMonth(addMonths(currentDate, 1)), 'yyyy-MM-dd');
 
             console.log('Fetching assignments:', { user_id: selectedUser, startDate, endDate });

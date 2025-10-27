@@ -8,7 +8,8 @@ import Users from '@/pages/Users';
 import Tickets from '@/pages/Tickets';
 import Calendar from '@/pages/CalendarNew';
 import Settings from '@/pages/Settings';
-import Reports from '@/pages/Reports';
+import ReportAssignments from '@/pages/ReportAssignments';
+import ReportSummary from '@/pages/ReportSummary';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { Toaster } from '@/components/ui/toaster';
 
@@ -31,7 +32,8 @@ function App() {
               <Route path="users" element={<Users />} />
               <Route path="tickets" element={<Tickets />} />
               <Route path="calendar" element={<Calendar />} />
-              <Route path="reports" element={<Reports />} />
+              <Route path="reports/assignments" element={<ReportAssignments />} />
+              <Route path="reports/summary" element={<ReportSummary />} />
               <Route path="settings" element={<Settings />} />
             </Route>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />

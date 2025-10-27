@@ -16,7 +16,7 @@ class TicketController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Ticket::with(['creator', 'assignments.user']);
+        $query = Ticket::with(['creator', 'assignments.user', 'technicalUser', 'functionalUser']);
 
         // Filter by status
         if ($request->has('status')) {
@@ -60,6 +60,8 @@ class TicketController extends Controller
             'priority' => 'required|integer|min:1|max:5',
             'total_hours' => 'required|numeric|min:0.5',
             'user_id' => 'required|exists:users,id',
+            'technical_user_id' => 'nullable|exists:users,id',
+            'functional_user_id' => 'nullable|exists:users,id',
             'start_date' => 'required|date|after_or_equal:today',
             'buffer_days' => 'nullable|integer|min:0',
         ]);
@@ -79,11 +81,26 @@ class TicketController extends Controller
                 'hours_per_day' => 4, // Always 4 hours per day
                 'status' => 'pending',
                 'created_by' => $request->user()->id,
+                'technical_user_id' => $request->technical_user_id,
+                'functional_user_id' => $request->functional_user_id,
+                'start_date' => $request->start_date, // Save the start date from form
                 'buffer_days' => $request->buffer_days ?? 0,
             ]);
 
             // Assign the ticket to the user with priority logic, starting from the specified date
             $this->assignTicketToUser($ticket, $request->user_id, $request->start_date);
+
+            // If priority is very high (1), reorganize calendar to optimize space
+            // This ensures other tickets fill the remaining space
+            if ($request->priority == 1) {
+                $this->reorganizeUserCalendar($request->user_id);
+            }
+
+            // Send notification to the assigned user
+            $user = \App\Models\User::find($request->user_id);
+            if ($user) {
+                $user->notify(new \App\Notifications\TicketAssigned($ticket));
+            }
 
             DB::commit();
 
@@ -112,7 +129,11 @@ class TicketController extends Controller
             'title' => 'sometimes|required|string|max:255',
             'description' => 'nullable|string',
             'priority' => 'sometimes|required|integer|min:1|max:5',
-            'status' => 'sometimes|required|in:pending,in_progress,completed,cancelled',
+            'status' => 'sometimes|required|in:pending,in_progress,completed,cancelled,stopped',
+            'total_hours' => 'nullable|numeric|min:0.5',
+            'technical_user_id' => 'nullable|exists:users,id',
+            'functional_user_id' => 'nullable|exists:users,id',
+            'new_user_id' => 'nullable|exists:users,id',
         ]);
 
         if ($validator->fails()) {
@@ -122,18 +143,40 @@ class TicketController extends Controller
         DB::beginTransaction();
         try {
             $oldPriority = $ticket->priority;
-            $ticket->update($request->only(['title', 'description', 'priority', 'status']));
+            $oldTotalHours = $ticket->total_hours;
+            $ticket->update($request->only(['title', 'description', 'priority', 'status', 'total_hours', 'technical_user_id', 'functional_user_id']));
 
-            // If priority changed, recalculate assignments
-            if ($request->has('priority') && $oldPriority != $request->priority) {
+            // If user wants to reassign to a new user
+            if ($request->has('new_user_id') && $request->new_user_id) {
+                $newUserId = $request->new_user_id;
+                $originalStartDate = $ticket->start_date; // Preserve original start date
+
+                // Delete current assignments
+                $ticket->assignments()->delete();
+
+                // Reassign to new user
+                $this->assignTicketToUser($ticket, $newUserId, $originalStartDate);
+
+                // Reorganize calendar for the new user to optimize space
+                $this->reorganizeUserCalendar($newUserId);
+
+                // Send notification to new user
+                $newUser = \App\Models\User::find($newUserId);
+                if ($newUser) {
+                    $newUser->notify(new \App\Notifications\TicketAssigned($ticket));
+                }
+            }
+            // If priority or total_hours changed (and not reassigning), recalculate entire user calendar
+            elseif (
+                ($request->has('priority') && $oldPriority != $request->priority) ||
+                ($request->has('total_hours') && $oldTotalHours != $request->total_hours)
+            ) {
                 // Get all assignments for this ticket
                 $assignments = $ticket->assignments;
                 if ($assignments->isNotEmpty()) {
                     $userId = $assignments->first()->user_id;
-                    // Delete current assignments
-                    $ticket->assignments()->delete();
-                    // Reassign with new priority
-                    $this->assignTicketToUser($ticket, $userId);
+                    // Reorganize entire calendar for this user to optimize space
+                    $this->reorganizeUserCalendar($userId);
                 }
             }
 
@@ -166,6 +209,83 @@ class TicketController extends Controller
     }
 
     /**
+     * Check user availability for ticket assignment
+     */
+    public function checkAvailability(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'user_id' => 'required|exists:users,id',
+            'start_date' => 'required|date',
+            'total_hours' => 'required|numeric|min:0.5',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $userId = $request->user_id;
+        $startDate = Carbon::parse($request->start_date);
+        $totalHours = $request->total_hours;
+        $hoursPerDay = 4;
+
+        $daysNeeded = ceil($totalHours / $hoursPerDay);
+        $fullDays = [];
+        $warnings = [];
+
+        for ($i = 0; $i < $daysNeeded; $i++) {
+            $date = $startDate->copy()->addDays($i);
+
+            // Skip weekends
+            while ($date->isWeekend()) {
+                $date->addDay();
+            }
+
+            // Skip holidays
+            while (\App\Models\Holiday::isHoliday($date)) {
+                $date->addDay();
+            }
+
+            $assignedHours = TicketAssignment::where('user_id', $userId)
+                ->where('date', $date->format('Y-m-d'))
+                ->sum('hours');
+
+            if ($assignedHours >= 8) {
+                $fullDays[] = [
+                    'date' => $date->format('Y-m-d'),
+                    'assigned_hours' => $assignedHours
+                ];
+            } elseif ($assignedHours >= 6) {
+                $warnings[] = [
+                    'date' => $date->format('Y-m-d'),
+                    'assigned_hours' => $assignedHours,
+                    'available_hours' => 8 - $assignedHours
+                ];
+            }
+        }
+
+        $hasFullDays = count($fullDays) > 0;
+        $hasWarnings = count($warnings) > 0;
+
+        $message = '';
+        if ($hasFullDays) {
+            $message = 'ADVERTENCIA: El usuario tiene ' . count($fullDays) . ' día(s) completos (8h) en el rango de fechas. Las asignaciones existentes serán movidas según su prioridad.';
+        } elseif ($hasWarnings) {
+            $message = 'NOTA: El usuario tiene ' . count($warnings) . ' día(s) con más de 6 horas asignadas. Disponibilidad limitada.';
+        } else {
+            $message = 'El usuario tiene buena disponibilidad en el rango seleccionado.';
+        }
+
+        return response()->json([
+            'has_full_days' => $hasFullDays,
+            'has_warnings' => $hasWarnings,
+            'full_days' => $fullDays,
+            'warnings' => $warnings,
+            'message' => $message,
+            'severity' => $hasFullDays ? 'error' : ($hasWarnings ? 'warning' : 'success')
+        ]);
+    }
+
+    /**
      * Get assignments for a specific user and date range
      */
     public function getAssignments(Request $request)
@@ -195,7 +315,8 @@ class TicketController extends Controller
      */
     private function assignTicketToUser(Ticket $ticket, $userId, $startDate = null)
     {
-        $hoursPerDay = $ticket->hours_per_day ?? 4;
+        // Priority 1 (very high) can use full 8 hours per day
+        $hoursPerDay = ($ticket->priority == 1) ? 8 : ($ticket->hours_per_day ?? 4);
         $totalHours = $ticket->total_hours;
         $assignedHours = 0;
 
@@ -230,7 +351,19 @@ class TicketController extends Controller
 
             // Calculate total hours already assigned
             $totalAssignedHours = $existingAssignments->sum('hours');
-            $maxDailyHours = 9; // 9am to 6pm = 9 hours
+            $maxDailyHours = 8; // 9am to 5pm = 8 hours
+
+            // Check if this ticket already has an assignment on this date
+            $alreadyAssignedToday = TicketAssignment::where('ticket_id', $ticket->id)
+                ->where('user_id', $userId)
+                ->where('date', $currentDate->format('Y-m-d'))
+                ->exists();
+
+            // For non-priority-1 tickets, skip if already assigned today (max 1 assignment per day)
+            if ($ticket->priority != 1 && $alreadyAssignedToday) {
+                $currentDate->addDay();
+                continue;
+            }
 
             // If the day has space
             if ($totalAssignedHours < $maxDailyHours) {
@@ -242,8 +375,24 @@ class TicketController extends Controller
                     $remainingHours = $totalHours - $assignedHours;
                     $hoursThisDay = min($hoursPerDay, $remainingHours, $availableHours);
 
+                    // For priority 1, we need to refresh assignments since they were all moved
+                    if ($ticket->priority == 1) {
+                        $existingAssignments = TicketAssignment::where('user_id', $userId)
+                            ->where('date', $currentDate->format('Y-m-d'))
+                            ->with('ticket')
+                            ->get();
+                    }
+
                     // Determine start and end time based on existing assignments
-                    $timeSlot = $this->findAvailableTimeSlot($existingAssignments, $hoursThisDay);
+                    // For priority 1, ensure it starts at the beginning of the day
+                    if ($ticket->priority == 1) {
+                        $timeSlot = [
+                            'start' => '09:00:00',
+                            'end' => sprintf('%02d:00:00', 9 + $hoursThisDay),
+                        ];
+                    } else {
+                        $timeSlot = $this->findAvailableTimeSlot($existingAssignments, $hoursThisDay);
+                    }
 
                     // Create the assignment
                     TicketAssignment::create([
@@ -257,6 +406,13 @@ class TicketController extends Controller
 
                     $assignedHours += $hoursThisDay;
                     $lastAssignmentDate = $currentDate->copy();
+
+                    // For non-priority-1 tickets, move to next day after creating assignment
+                    // (only 1 assignment of 4 hours per day allowed)
+                    if ($ticket->priority != 1) {
+                        $currentDate->addDay();
+                        continue;
+                    }
                 }
             }
 
@@ -281,7 +437,7 @@ class TicketController extends Controller
      */
     private function getAvailableHours($newTicket, $existingAssignments, $userId, $date)
     {
-        $maxDailyHours = 9; // 9am to 6pm
+        $maxDailyHours = 8; // 9am to 5pm
 
         // If no assignments, return max hours
         if ($existingAssignments->isEmpty()) {
@@ -299,22 +455,28 @@ class TicketController extends Controller
 
         // Need to move some assignments - find lower priority ones
         $assignmentsToMove = $existingAssignments->filter(function ($assignment) use ($newTicket) {
+            // Priority 1 can displace any other ticket
+            // Other priorities only displace lower priority tickets
+            if ($newTicket->priority == 1) {
+                return true; // Can move any ticket
+            }
             return $assignment->ticket->priority > $newTicket->priority;
         })->sortByDesc(function ($assignment) {
             return $assignment->ticket->priority;
         });
 
-        // Move lower priority assignments until we have enough space
+        // Move lower priority assignments to free up space
         $freedHours = 0;
         foreach ($assignmentsToMove as $assignment) {
-            if ($freedHours >= $maxDailyHours - $totalHours) {
-                break;
-            }
-
             // Move this assignment to the next available day
             $this->moveAssignmentByHours($assignment, $userId, $assignment->hours);
             $freedHours += $assignment->hours;
             $totalHours -= $assignment->hours;
+
+            // Stop if we have freed enough space
+            if ($maxDailyHours - $totalHours > 0) {
+                break;
+            }
         }
 
         return min($maxDailyHours - $totalHours + $freedHours, $maxDailyHours);
@@ -344,12 +506,25 @@ class TicketController extends Controller
                 continue;
             }
 
+            // Check if this ticket already has an assignment on this date
+            // For non-priority-1 tickets, only allow 1 assignment per day
+            $ticketAlreadyAssignedHere = TicketAssignment::where('ticket_id', $ticket->id)
+                ->where('user_id', $userId)
+                ->where('date', $currentDate->format('Y-m-d'))
+                ->exists();
+
+            // Skip this day if ticket is not priority 1 and already has assignment
+            if ($ticket->priority != 1 && $ticketAlreadyAssignedHere) {
+                $currentDate->addDay();
+                continue;
+            }
+
             $existingAssignments = TicketAssignment::where('user_id', $userId)
                 ->where('date', $currentDate->format('Y-m-d'))
                 ->get();
 
             $totalHours = $existingAssignments->sum('hours');
-            $maxDailyHours = 9;
+            $maxDailyHours = 8;
 
             if ($totalHours + $hours <= $maxDailyHours) {
                 // Create new assignment for the moved hours
@@ -379,9 +554,9 @@ class TicketController extends Controller
      */
     private function findAvailableTimeSlot($existingAssignments, $hours)
     {
-        // Default work hours: 9 AM to 6 PM (9 hours)
+        // Default work hours: 9 AM to 5 PM (8 hours)
         $startHour = 9;
-        $endHour = 18;
+        $endHour = 17;
 
         if ($existingAssignments->isEmpty()) {
             return [
@@ -446,5 +621,50 @@ class TicketController extends Controller
             'start_date' => $firstDate->format('Y-m-d'),
             'calculated_end_date' => $endDateWithBuffer->format('Y-m-d'),
         ]);
+    }
+
+    /**
+     * Reorganize entire calendar for a user after a ticket modification
+     * This ensures that freed up space is utilized by other tickets
+     */
+    private function reorganizeUserCalendar($userId)
+    {
+        // Get all tickets with assignments for this user
+        $ticketIds = TicketAssignment::where('user_id', $userId)
+            ->distinct()
+            ->pluck('ticket_id');
+
+        if ($ticketIds->isEmpty()) {
+            return;
+        }
+
+        // Get all active tickets (pending or in_progress) for this user
+        $tickets = Ticket::whereIn('id', $ticketIds)
+            ->whereIn('status', ['pending', 'in_progress'])
+            ->orderBy('priority', 'asc') // Priority 1 first (very high)
+            ->orderBy('start_date', 'asc') // Then by original start date
+            ->get();
+
+        if ($tickets->isEmpty()) {
+            return;
+        }
+
+        // Store original start dates for each ticket before deleting assignments
+        $originalStartDates = [];
+        foreach ($tickets as $ticket) {
+            $originalStartDates[$ticket->id] = $ticket->start_date;
+        }
+
+        // Delete all assignments for this user
+        TicketAssignment::where('user_id', $userId)
+            ->whereIn('ticket_id', $ticketIds)
+            ->delete();
+
+        // Re-assign all tickets in priority order, respecting original start dates
+        foreach ($tickets as $ticket) {
+            $ticket->refresh(); // Refresh to get updated total_hours if changed
+            $originalStartDate = $originalStartDates[$ticket->id];
+            $this->assignTicketToUser($ticket, $userId, $originalStartDate);
+        }
     }
 }
