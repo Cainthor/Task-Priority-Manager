@@ -93,11 +93,18 @@ export default function ReportSummary() {
     };
 
     const formatDate = (dateString) => {
-        return new Date(dateString).toLocaleDateString('es-ES', {
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric'
-        });
+        if (!dateString) return '-';
+        try {
+            // Parse as local date to avoid timezone issues
+            const [year, month, day] = dateString.split('-');
+            if (!year || !month || !day) return '-';
+            const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+            if (isNaN(date.getTime())) return '-';
+            return date.toLocaleDateString('es-ES');
+        } catch (error) {
+            console.error('Error formatting date:', dateString, error);
+            return '-';
+        }
     };
 
     const getPriorityLabel = (priority) => {

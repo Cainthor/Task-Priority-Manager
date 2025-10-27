@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import api from '@/lib/axios';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,10 +7,14 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { PlusCircle, Pencil, Trash2 } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { PlusCircle, Pencil, Trash2, Download, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { useToast } from '@/hooks/use-toast';
 
 export default function Users() {
   const [users, setUsers] = useState([]);
+  const [specialties, setSpecialties] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -20,11 +24,19 @@ export default function Users() {
     name: '',
     email: '',
     password: '',
+    role_type: '',
+    specialty_id: '',
   });
   const [errors, setErrors] = useState({});
+  const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [roleFilter, setRoleFilter] = useState('all');
+  const { toast } = useToast();
 
   useEffect(() => {
     fetchUsers();
+    fetchSpecialties();
   }, []);
 
   const fetchUsers = async () => {
@@ -35,6 +47,15 @@ export default function Users() {
       console.error('Error al cargar usuarios:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchSpecialties = async () => {
+    try {
+      const response = await api.get('/api/specialties');
+      setSpecialties(response.data);
+    } catch (error) {
+      console.error('Error al cargar especialidades:', error);
     }
   };
 
@@ -70,6 +91,8 @@ export default function Users() {
       name: user.name,
       email: user.email,
       password: '',
+      role_type: user.role_type || '',
+      specialty_id: user.specialty_id ? user.specialty_id.toString() : '',
     });
     setDialogOpen(true);
   };
@@ -88,13 +111,87 @@ export default function Users() {
   const handleCloseDialog = () => {
     setDialogOpen(false);
     setCurrentUser(null);
-    setFormData({ name: '', email: '', password: '' });
+    setFormData({ name: '', email: '', password: '', role_type: '', specialty_id: '' });
     setErrors({});
   };
 
   const openDeleteDialog = (user) => {
     setUserToDelete(user);
     setDeleteDialogOpen(true);
+  };
+
+  const getRoleLabel = (roleType) => {
+    const labels = {
+      technical: 'Técnico',
+      functional: 'Funcional',
+      service_manager: 'Gerente de Servicio',
+    };
+    return labels[roleType] || '-';
+  };
+
+  // Apply filters
+  const filteredUsers = useMemo(() => {
+    return users.filter(user => {
+      const matchesSearch = user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          user.email.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesRole = roleFilter === 'all' || user.role_type === roleFilter;
+
+      return matchesSearch && matchesRole;
+    });
+  }, [users, searchTerm, roleFilter]);
+
+  // Pagination
+  const totalPages = Math.ceil(filteredUsers.length / itemsPerPage);
+  const paginatedUsers = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    const end = start + itemsPerPage;
+    return filteredUsers.slice(start, end);
+  }, [filteredUsers, currentPage, itemsPerPage]);
+
+  const exportToExcel = () => {
+    if (filteredUsers.length === 0) {
+      toast({
+        title: 'Sin datos',
+        description: 'No hay datos para exportar',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Prepare data
+    const data = filteredUsers.map(user => ({
+      ID: user.id,
+      Nombre: user.name,
+      Email: user.email,
+      Rol: getRoleLabel(user.role_type),
+      Especialidad: user.specialty?.name || '-',
+      'Fecha de Creación': new Date(user.created_at).toLocaleDateString('es-ES'),
+    }));
+
+    // Create workbook
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(data);
+
+    // Set column widths
+    ws['!cols'] = [
+      { wch: 8 },  // ID
+      { wch: 25 }, // Nombre
+      { wch: 30 }, // Email
+      { wch: 20 }, // Rol
+      { wch: 25 }, // Especialidad
+      { wch: 15 }, // Fecha de Creación
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Usuarios');
+
+    // Save file
+    const fileName = `Usuarios_${new Date().toISOString().split('T')[0]}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+
+    toast({
+      title: 'Éxito',
+      description: 'Reporte exportado correctamente',
+    });
   };
 
   if (loading) {
@@ -118,7 +215,7 @@ export default function Users() {
         
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            <Button onClick={() => { setCurrentUser(null); setFormData({ name: '', email: '', password: '' }); }}>
+            <Button onClick={() => { setCurrentUser(null); setFormData({ name: '', email: '', password: '', role_type: '', specialty_id: '' }); }}>
               <PlusCircle className="mr-2 h-4 w-4" />
               Nuevo Usuario
             </Button>
@@ -168,6 +265,42 @@ export default function Users() {
                   />
                   {errors.password && <p className="text-sm text-red-600">{errors.password[0]}</p>}
                 </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="role_type">Tipo de Rol</Label>
+                  <Select value={formData.role_type} onValueChange={(value) => setFormData({ ...formData, role_type: value, specialty_id: '' })}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleccione un rol" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="technical">Técnico</SelectItem>
+                      <SelectItem value="functional">Funcional</SelectItem>
+                      <SelectItem value="service_manager">Gerente de Servicio</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {errors.role_type && <p className="text-sm text-red-600">{errors.role_type[0]}</p>}
+                </div>
+
+                {(formData.role_type === 'technical' || formData.role_type === 'functional') && (
+                  <div className="space-y-2">
+                    <Label htmlFor="specialty_id">Especialidad</Label>
+                    <Select value={formData.specialty_id} onValueChange={(value) => setFormData({ ...formData, specialty_id: value })}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Seleccione una especialidad" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {specialties
+                          .filter(s => s.type === formData.role_type)
+                          .map(specialty => (
+                            <SelectItem key={specialty.id} value={specialty.id.toString()}>
+                              {specialty.name}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                    {errors.specialty_id && <p className="text-sm text-red-600">{errors.specialty_id[0]}</p>}
+                  </div>
+                )}
               </div>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={handleCloseDialog}>
@@ -184,49 +317,180 @@ export default function Users() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Lista de Usuarios</CardTitle>
-          <CardDescription>Total de usuarios: {users.length}</CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Lista de Usuarios</CardTitle>
+              <CardDescription>Total de usuarios: {filteredUsers.length}</CardDescription>
+            </div>
+            <Button onClick={exportToExcel} variant="outline">
+              <Download className="mr-2 h-4 w-4" />
+              Exportar a Excel
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>ID</TableHead>
-                <TableHead>Nombre</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Fecha de Creación</TableHead>
-                <TableHead className="text-right">Acciones</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.map((user) => (
-                <TableRow key={user.id}>
-                  <TableCell className="font-medium">{user.id}</TableCell>
-                  <TableCell>{user.name}</TableCell>
-                  <TableCell>{user.email}</TableCell>
-                  <TableCell>{new Date(user.created_at).toLocaleDateString()}</TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleEdit(user)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => openDeleteDialog(user)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          {/* Filters */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Buscar</label>
+              <div className="relative">
+                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar por nombre o email..."
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  className="pl-8"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Rol</label>
+              <Select value={roleFilter} onValueChange={(value) => {
+                setRoleFilter(value);
+                setCurrentPage(1);
+              }}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos</SelectItem>
+                  <SelectItem value="technical">Técnico</SelectItem>
+                  <SelectItem value="functional">Funcional</SelectItem>
+                  <SelectItem value="service_manager">Gerente de Servicio</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {filteredUsers.length === 0 ? (
+            <p className="text-center text-muted-foreground py-8">
+              No hay usuarios que coincidan con los filtros
+            </p>
+          ) : (
+            <>
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>ID</TableHead>
+                      <TableHead>Nombre</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Rol</TableHead>
+                      <TableHead>Especialidad</TableHead>
+                      <TableHead>Fecha de Creación</TableHead>
+                      <TableHead className="text-right">Acciones</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginatedUsers.map((user) => (
+                      <TableRow key={user.id}>
+                        <TableCell className="font-medium">{user.id}</TableCell>
+                        <TableCell>{user.name}</TableCell>
+                        <TableCell>{user.email}</TableCell>
+                        <TableCell>{getRoleLabel(user.role_type)}</TableCell>
+                        <TableCell>{user.specialty?.name || '-'}</TableCell>
+                        <TableCell>{new Date(user.created_at).toLocaleDateString()}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleEdit(user)}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => openDeleteDialog(user)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* Pagination */}
+              <div className="flex items-center justify-between mt-4">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm text-muted-foreground">
+                    Mostrando {((currentPage - 1) * itemsPerPage) + 1} a{' '}
+                    {Math.min(currentPage * itemsPerPage, filteredUsers.length)} de{' '}
+                    {filteredUsers.length} resultados
+                  </p>
+                  <Select value={itemsPerPage.toString()} onValueChange={(value) => {
+                    setItemsPerPage(parseInt(value));
+                    setCurrentPage(1);
+                  }}>
+                    <SelectTrigger className="w-[100px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="5">5 / página</SelectItem>
+                      <SelectItem value="10">10 / página</SelectItem>
+                      <SelectItem value="20">20 / página</SelectItem>
+                      <SelectItem value="50">50 / página</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={currentPage === 1}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Anterior
+                  </Button>
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      let pageNum;
+                      if (totalPages <= 5) {
+                        pageNum = i + 1;
+                      } else if (currentPage <= 3) {
+                        pageNum = i + 1;
+                      } else if (currentPage >= totalPages - 2) {
+                        pageNum = totalPages - 4 + i;
+                      } else {
+                        pageNum = currentPage - 2 + i;
+                      }
+
+                      return (
+                        <Button
+                          key={pageNum}
+                          variant={currentPage === pageNum ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setCurrentPage(pageNum)}
+                          className="w-8 h-8 p-0"
+                        >
+                          {pageNum}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    disabled={currentPage === totalPages}
+                  >
+                    Siguiente
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

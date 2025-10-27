@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import axios from '../lib/axios';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -10,8 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useToast } from '../hooks/use-toast';
 import { useForm } from 'react-hook-form';
-import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Pencil, Trash2, Download, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '../components/ui/alert-dialog';
+import * as XLSX from 'xlsx';
 
 export default function Tickets() {
     const [tickets, setTickets] = useState([]);
@@ -22,6 +23,11 @@ export default function Tickets() {
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [ticketToDelete, setTicketToDelete] = useState(null);
     const [availabilityDialog, setAvailabilityDialog] = useState({ open: false, message: '', severity: 'info', pendingData: null });
+    const [searchTerm, setSearchTerm] = useState('');
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(10);
+    const [priorityFilter, setPriorityFilter] = useState('all');
+    const [statusFilter, setStatusFilter] = useState('all');
     const { toast } = useToast();
     const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm();
 
@@ -192,6 +198,8 @@ export default function Tickets() {
         setValue('priority', ticket.priority.toString());
         setValue('status', ticket.status);
         setValue('total_hours', ticket.total_hours);
+        setValue('technical_user_id', ticket.technical_user_id ? ticket.technical_user_id.toString() : '');
+        setValue('functional_user_id', ticket.functional_user_id ? ticket.functional_user_id.toString() : '');
         setDialogOpen(true);
     };
 
@@ -280,6 +288,90 @@ export default function Tickets() {
             console.error('Error formatting date:', dateString, error);
             return '-';
         }
+    };
+
+    // Apply filters
+    const filteredTickets = useMemo(() => {
+        return tickets.filter(ticket => {
+            const matchesSearch = ticket.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                                (ticket.description && ticket.description.toLowerCase().includes(searchTerm.toLowerCase()));
+            const matchesPriority = priorityFilter === 'all' || ticket.priority === parseInt(priorityFilter);
+            const matchesStatus = statusFilter === 'all' || ticket.status === statusFilter;
+
+            return matchesSearch && matchesPriority && matchesStatus;
+        });
+    }, [tickets, searchTerm, priorityFilter, statusFilter]);
+
+    // Pagination
+    const totalPages = Math.ceil(filteredTickets.length / itemsPerPage);
+    const paginatedTickets = useMemo(() => {
+        const start = (currentPage - 1) * itemsPerPage;
+        const end = start + itemsPerPage;
+        return filteredTickets.slice(start, end);
+    }, [filteredTickets, currentPage, itemsPerPage]);
+
+    const exportToExcel = () => {
+        if (filteredTickets.length === 0) {
+            toast({
+                title: 'Sin datos',
+                description: 'No hay datos para exportar',
+                variant: 'destructive',
+            });
+            return;
+        }
+
+        // Prepare data
+        const data = filteredTickets.map(ticket => {
+            const assignedUser = ticket.assignments && ticket.assignments.length > 0
+                ? ticket.assignments[0].user
+                : null;
+
+            return {
+                Título: ticket.title,
+                Descripción: ticket.description || '-',
+                Prioridad: getPriorityLabel(ticket.priority),
+                Estado: getStatusLabel(ticket.status),
+                'Asignado a': assignedUser?.name || '-',
+                'Horas Totales': ticket.total_hours,
+                'Fecha Inicio': formatDate(ticket.start_date),
+                'Fecha Término': formatDate(ticket.calculated_end_date),
+                'Usuario Técnico': ticket.technicalUser?.name || '-',
+                'Especialidad Técnica': ticket.technicalUser?.specialty?.name || '-',
+                'Usuario Funcional': ticket.functionalUser?.name || '-',
+                'Especialidad Funcional': ticket.functionalUser?.specialty?.name || '-',
+            };
+        });
+
+        // Create workbook
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.json_to_sheet(data);
+
+        // Set column widths
+        ws['!cols'] = [
+            { wch: 30 }, // Título
+            { wch: 40 }, // Descripción
+            { wch: 12 }, // Prioridad
+            { wch: 12 }, // Estado
+            { wch: 20 }, // Asignado a
+            { wch: 12 }, // Horas Totales
+            { wch: 12 }, // Fecha Inicio
+            { wch: 12 }, // Fecha Término
+            { wch: 20 }, // Usuario Técnico
+            { wch: 20 }, // Especialidad Técnica
+            { wch: 20 }, // Usuario Funcional
+            { wch: 20 }, // Especialidad Funcional
+        ];
+
+        XLSX.utils.book_append_sheet(wb, ws, 'Tickets');
+
+        // Save file
+        const fileName = `Tickets_${new Date().toISOString().split('T')[0]}.xlsx`;
+        XLSX.writeFile(wb, fileName);
+
+        toast({
+            title: 'Éxito',
+            description: 'Reporte exportado correctamente',
+        });
     };
 
     if (loading) {
@@ -422,6 +514,46 @@ export default function Tickets() {
                                             Si seleccionas un nuevo usuario, se recalcularán todas las asignaciones
                                         </p>
                                     </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="technical_user_id">Usuario Técnico (Opcional)</Label>
+                                        <input type="hidden" {...register('technical_user_id')} />
+                                        <Select
+                                            onValueChange={(value) => setValue('technical_user_id', value)}
+                                            value={watch('technical_user_id')}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Selecciona usuario técnico" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {users.filter(u => u.role_type === 'technical').map((user) => (
+                                                    <SelectItem key={user.id} value={user.id.toString()}>
+                                                        {user.name} {user.specialty && `- ${user.specialty.name}`}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="functional_user_id">Usuario Funcional (Opcional)</Label>
+                                        <input type="hidden" {...register('functional_user_id')} />
+                                        <Select
+                                            onValueChange={(value) => setValue('functional_user_id', value)}
+                                            value={watch('functional_user_id')}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Selecciona usuario funcional" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {users.filter(u => u.role_type === 'functional').map((user) => (
+                                                    <SelectItem key={user.id} value={user.id.toString()}>
+                                                        {user.name} {user.specialty && `- ${user.specialty.name}`}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
                                 </>
                             )}
 
@@ -481,7 +613,7 @@ export default function Tickets() {
                                     </div>
 
                                     <div className="space-y-2">
-                                        <Label htmlFor="user_id">Asignar a Usuario</Label>
+                                        <Label htmlFor="user_id">Asignar a Usuario (Calendario)</Label>
                                         <input type="hidden" {...register('user_id', { required: !editingTicket })} />
                                         <Select
                                             onValueChange={(value) => setValue('user_id', value)}
@@ -494,6 +626,49 @@ export default function Tickets() {
                                                 {users.map((user) => (
                                                     <SelectItem key={user.id} value={user.id.toString()}>
                                                         {user.name} ({user.email})
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        <p className="text-xs text-muted-foreground">
+                                            Usuario al que se asignarán las horas en el calendario
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="technical_user_id">Usuario Técnico (Opcional)</Label>
+                                        <input type="hidden" {...register('technical_user_id')} />
+                                        <Select
+                                            onValueChange={(value) => setValue('technical_user_id', value)}
+                                            value={watch('technical_user_id')}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Selecciona usuario técnico" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {users.filter(u => u.role_type === 'technical').map((user) => (
+                                                    <SelectItem key={user.id} value={user.id.toString()}>
+                                                        {user.name} {user.specialty && `- ${user.specialty.name}`}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="functional_user_id">Usuario Funcional (Opcional)</Label>
+                                        <input type="hidden" {...register('functional_user_id')} />
+                                        <Select
+                                            onValueChange={(value) => setValue('functional_user_id', value)}
+                                            value={watch('functional_user_id')}
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Selecciona usuario funcional" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {users.filter(u => u.role_type === 'functional').map((user) => (
+                                                    <SelectItem key={user.id} value={user.id.toString()}>
+                                                        {user.name} {user.specialty && `- ${user.specialty.name}`}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
@@ -517,85 +692,224 @@ export default function Tickets() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Lista de Tickets</CardTitle>
-                    <CardDescription>
-                        Todos los tickets del sistema
-                    </CardDescription>
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <CardTitle>Lista de Tickets</CardTitle>
+                            <CardDescription>
+                                Total de tickets: {filteredTickets.length}
+                            </CardDescription>
+                        </div>
+                        <Button onClick={exportToExcel} variant="outline">
+                            <Download className="mr-2 h-4 w-4" />
+                            Exportar a Excel
+                        </Button>
+                    </div>
                 </CardHeader>
                 <CardContent>
-                    <div className="overflow-x-auto">
-                        <Table className="min-w-[800px]">
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead>Título</TableHead>
-                                <TableHead>Prioridad</TableHead>
-                                <TableHead>Estado</TableHead>
-                                <TableHead>Asignado a</TableHead>
-                                <TableHead>Horas Totales</TableHead>
-                                <TableHead>Fecha Inicio</TableHead>
-                                <TableHead>Fecha Término</TableHead>
-                                <TableHead className="text-right">Acciones</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {tickets.length === 0 ? (
-                                <TableRow>
-                                    <TableCell colSpan={8} className="text-center">
-                                        No hay tickets registrados
-                                    </TableCell>
-                                </TableRow>
-                            ) : (
-                                tickets.map((ticket) => {
-                                    const assignedUser = ticket.assignments && ticket.assignments.length > 0
-                                        ? ticket.assignments[0].user
-                                        : null;
+                    {/* Filters */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Buscar</label>
+                            <div className="relative">
+                                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                                <Input
+                                    placeholder="Buscar ticket..."
+                                    value={searchTerm}
+                                    onChange={(e) => {
+                                        setSearchTerm(e.target.value);
+                                        setCurrentPage(1);
+                                    }}
+                                    className="pl-8"
+                                />
+                            </div>
+                        </div>
 
-                                    return (
-                                    <TableRow key={ticket.id}>
-                                        <TableCell className="font-medium">{ticket.title}</TableCell>
-                                        <TableCell>
-                                            <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${priorityColors[ticket.priority]}`}>
-                                                {getPriorityLabel(ticket.priority)}
-                                            </span>
-                                        </TableCell>
-                                        <TableCell>
-                                            <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${statusColors[ticket.status]}`}>
-                                                {getStatusLabel(ticket.status)}
-                                            </span>
-                                        </TableCell>
-                                        <TableCell>{assignedUser?.name || '-'}</TableCell>
-                                        <TableCell>{ticket.total_hours}h</TableCell>
-                                        <TableCell>
-                                            {formatDate(ticket.start_date)}
-                                        </TableCell>
-                                        <TableCell>
-                                            {formatDate(ticket.calculated_end_date)}
-                                        </TableCell>
-                                        <TableCell className="text-right">
-                                            <div className="flex justify-end gap-2">
-                                                <Button
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    onClick={() => handleEdit(ticket)}
-                                                >
-                                                    <Pencil className="h-4 w-4" />
-                                                </Button>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    onClick={() => handleDelete(ticket)}
-                                                >
-                                                    <Trash2 className="h-4 w-4" />
-                                                </Button>
-                                            </div>
-                                        </TableCell>
-                                    </TableRow>
-                                    );
-                                })
-                            )}
-                        </TableBody>
-                    </Table>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Prioridad</label>
+                            <Select value={priorityFilter} onValueChange={(value) => {
+                                setPriorityFilter(value);
+                                setCurrentPage(1);
+                            }}>
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">Todas</SelectItem>
+                                    <SelectItem value="1">Muy Alta</SelectItem>
+                                    <SelectItem value="2">Alta</SelectItem>
+                                    <SelectItem value="3">Media</SelectItem>
+                                    <SelectItem value="4">Baja</SelectItem>
+                                    <SelectItem value="5">Muy Baja</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Estado</label>
+                            <Select value={statusFilter} onValueChange={(value) => {
+                                setStatusFilter(value);
+                                setCurrentPage(1);
+                            }}>
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">Todos</SelectItem>
+                                    <SelectItem value="pending">Pendiente</SelectItem>
+                                    <SelectItem value="in_progress">En Progreso</SelectItem>
+                                    <SelectItem value="completed">Completado</SelectItem>
+                                    <SelectItem value="cancelled">Cancelado</SelectItem>
+                                    <SelectItem value="stopped">Detenido</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
                     </div>
+
+                    {filteredTickets.length === 0 ? (
+                        <p className="text-center text-muted-foreground py-8">
+                            No hay tickets que coincidan con los filtros
+                        </p>
+                    ) : (
+                        <>
+                            <div className="overflow-x-auto rounded-md border">
+                                <Table className="min-w-[800px]">
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>Título</TableHead>
+                                            <TableHead>Prioridad</TableHead>
+                                            <TableHead>Estado</TableHead>
+                                            <TableHead>Asignado a</TableHead>
+                                            <TableHead>Horas Totales</TableHead>
+                                            <TableHead>Fecha Inicio</TableHead>
+                                            <TableHead>Fecha Término</TableHead>
+                                            <TableHead className="text-right">Acciones</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {paginatedTickets.map((ticket) => {
+                                            const assignedUser = ticket.assignments && ticket.assignments.length > 0
+                                                ? ticket.assignments[0].user
+                                                : null;
+
+                                            return (
+                                            <TableRow key={ticket.id}>
+                                                <TableCell className="font-medium">{ticket.title}</TableCell>
+                                                <TableCell>
+                                                    <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${priorityColors[ticket.priority]}`}>
+                                                        {getPriorityLabel(ticket.priority)}
+                                                    </span>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${statusColors[ticket.status]}`}>
+                                                        {getStatusLabel(ticket.status)}
+                                                    </span>
+                                                </TableCell>
+                                                <TableCell>{assignedUser?.name || '-'}</TableCell>
+                                                <TableCell>{ticket.total_hours}h</TableCell>
+                                                <TableCell>
+                                                    {formatDate(ticket.start_date)}
+                                                </TableCell>
+                                                <TableCell>
+                                                    {formatDate(ticket.calculated_end_date)}
+                                                </TableCell>
+                                                <TableCell className="text-right">
+                                                    <div className="flex justify-end gap-2">
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            onClick={() => handleEdit(ticket)}
+                                                        >
+                                                            <Pencil className="h-4 w-4" />
+                                                        </Button>
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            onClick={() => handleDelete(ticket)}
+                                                        >
+                                                            <Trash2 className="h-4 w-4" />
+                                                        </Button>
+                                                    </div>
+                                                </TableCell>
+                                            </TableRow>
+                                            );
+                                        })}
+                                    </TableBody>
+                                </Table>
+                            </div>
+
+                            {/* Pagination */}
+                            <div className="flex items-center justify-between mt-4">
+                                <div className="flex items-center gap-2">
+                                    <p className="text-sm text-muted-foreground">
+                                        Mostrando {((currentPage - 1) * itemsPerPage) + 1} a{' '}
+                                        {Math.min(currentPage * itemsPerPage, filteredTickets.length)} de{' '}
+                                        {filteredTickets.length} resultados
+                                    </p>
+                                    <Select value={itemsPerPage.toString()} onValueChange={(value) => {
+                                        setItemsPerPage(parseInt(value));
+                                        setCurrentPage(1);
+                                    }}>
+                                        <SelectTrigger className="w-[100px]">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="5">5 / página</SelectItem>
+                                            <SelectItem value="10">10 / página</SelectItem>
+                                            <SelectItem value="20">20 / página</SelectItem>
+                                            <SelectItem value="50">50 / página</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                                        disabled={currentPage === 1}
+                                    >
+                                        <ChevronLeft className="h-4 w-4" />
+                                        Anterior
+                                    </Button>
+                                    <div className="flex items-center gap-1">
+                                        {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                                            let pageNum;
+                                            if (totalPages <= 5) {
+                                                pageNum = i + 1;
+                                            } else if (currentPage <= 3) {
+                                                pageNum = i + 1;
+                                            } else if (currentPage >= totalPages - 2) {
+                                                pageNum = totalPages - 4 + i;
+                                            } else {
+                                                pageNum = currentPage - 2 + i;
+                                            }
+
+                                            return (
+                                                <Button
+                                                    key={pageNum}
+                                                    variant={currentPage === pageNum ? "default" : "outline"}
+                                                    size="sm"
+                                                    onClick={() => setCurrentPage(pageNum)}
+                                                    className="w-8 h-8 p-0"
+                                                >
+                                                    {pageNum}
+                                                </Button>
+                                            );
+                                        })}
+                                    </div>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                                        disabled={currentPage === totalPages}
+                                    >
+                                        Siguiente
+                                        <ChevronRight className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        </>
+                    )}
                 </CardContent>
             </Card>
 
